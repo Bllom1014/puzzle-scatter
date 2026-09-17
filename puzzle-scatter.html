@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>拼图碎片生成器</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: #fff;
+    overflow: hidden;
+}
+#canvas {
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    cursor: default;
+}
+#canvas.grabbable { cursor: grab; }
+#canvas.grabbing { cursor: grabbing; }
+.controls {
+    position: fixed;
+    bottom: 30px;
+    display: flex;
+    gap: 16px;
+    z-index: 100;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 0 20px;
+}
+.btn {
+    padding: 12px 28px;
+    border: none;
+    border-radius: 30px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+.btn-upload {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #fff;
+}
+.btn-upload:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(102,126,234,0.4);
+}
+.btn-shuffle {
+    background: linear-gradient(135deg, #f093fb, #f5576c);
+    color: #fff;
+}
+.btn-shuffle:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(245,87,108,0.4);
+}
+.btn-reset {
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.2);
+}
+.btn-reset:hover:not(:disabled) {
+    background: rgba(255,255,255,0.2);
+}
+.btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+.btn input[type="file"] { display: none; }
+
+/* 粒度选择 */
+.grid-selector {
+    display: flex;
+    gap: 8px;
+    padding: 4px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 30px;
+    border: 1px solid rgba(255,255,255,0.1);
+}
+.grid-btn {
+    padding: 8px 18px;
+    border: none;
+    border-radius: 24px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+    background: transparent;
+    color: rgba(255,255,255,0.5);
+}
+.grid-btn:hover:not(.grid-active):not(:disabled) {
+    color: rgba(255,255,255,0.8);
+    background: rgba(255,255,255,0.06);
+}
+.grid-btn.grid-active {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #fff;
+    box-shadow: 0 4px 12px rgba(102,126,234,0.3);
+}
+.grid-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.hint {
+    position: fixed;
+    top: 24px;
+    font-size: 14px;
+    opacity: 0.5;
+    letter-spacing: 1px;
+}
+.counter {
+    position: fixed;
+    top: 50px;
+    font-size: 18px;
+    font-weight: 700;
+    opacity: 0;
+    transition: opacity 0.4s;
+    pointer-events: none;
+}
+.counter.show { opacity: 0.85; }
+.complete-msg {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0);
+    font-size: 48px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #f093fb, #f5576c, #ffd200);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    pointer-events: none;
+    z-index: 200;
+    transition: transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    text-align: center;
+}
+.complete-msg.show {
+    transform: translate(-50%, -50%) scale(1);
+}
+.complete-sub {
+    display: block;
+    font-size: 18px;
+    font-weight: 400;
+    margin-top: 8px;
+    -webkit-text-fill-color: rgba(255,255,255,0.6);
+}
+</style>
+</head>
+<body>
+<canvas id="canvas" width="1280" height="760"></canvas>
+<div class="hint">上传照片 → 选择块数 → 打散拼图 → 拖拽碎片拼回原图</div>
+<div class="counter" id="counter"></div>
+<div class="complete-msg" id="completeMsg">拼图完成！<span class="complete-sub">点击「重新开始」可以再来一次</span></div>
+<div class="controls">
+    <label class="btn btn-upload">
+        上传照片
+        <input type="file" id="fileInput" accept="image/*">
+    </label>
+    <div class="grid-selector" id="gridSelector">
+        <button class="grid-btn grid-active" data-grid="4">16块</button>
+        <button class="grid-btn" data-grid="5">25块</button>
+        <button class="grid-btn" data-grid="6">36块</button>
+        <button class="grid-btn" data-grid="7">49块</button>
+        <button class="grid-btn" data-grid="8">64块</button>
+    </div>
+    <button class="btn btn-shuffle" id="shuffleBtn" disabled>打散拼图</button>
+    <button class="btn btn-reset" id="resetBtn" disabled>重新开始</button>
+</div>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const fileInput = document.getElementById('fileInput');
+const shuffleBtn = document.getElementById('shuffleBtn');
+const resetBtn = document.getElementById('resetBtn');
+const counterEl = document.getElementById('counter');
+const completeMsg = document.getElementById('completeMsg');
+const gridBtns = document.querySelectorAll('.grid-btn');
+
+let image = null;
+let pieces = [];
+let rows = 3, cols = 3;  // 默认 3x3 = 9块
+let pieceW, pieceH;
+let offsetX, offsetY;
+let imgDrawW, imgDrawH;
+let animating = false;
+let dragging = null;
+let dragOffsetX = 0, dragOffsetY = 0;
+let lockedCount = 0;
+let mode = 'idle'; // 'idle' | 'scattered'
+let hoverPiece = null;
+
+drawPlaceholder();
+
+// ──────────────── 初始占位 ────────────────
+function drawPlaceholder() {
+    ctx.fillStyle = 'rgba(255,255,255,0.03)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.font = '22px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('点击下方「上传照片」开始', canvas.width / 2, canvas.height / 2);
+}
+
+// ──────────────── 文件上传 ────────────────
+fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        const img = new Image();
+        img.onload = () => {
+            image = img;
+            mode = 'idle';
+            animating = false;
+            pieces = [];
+            lockedCount = 0;
+            shuffleBtn.disabled = false;
+            resetBtn.disabled = true;
+            counterEl.classList.remove('show');
+            completeMsg.classList.remove('show');
+            drawOriginal();
+        };
+        img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+});
+
+// ──────────────── 居中绘制原图 + 网格预览 ────────────────
+function drawOriginal() {
+    const maxW = canvas.width * 0.38;
+    const maxH = canvas.height * 0.58;
+    const scale = Math.min(maxW / image.width, maxH / image.height);
+    imgDrawW = image.width * scale;
+    imgDrawH = image.height * scale;
+
+    offsetX = (canvas.width - imgDrawW) / 2;
+    offsetY = (canvas.height - imgDrawH) / 2;
+    pieceW = imgDrawW / cols;
+    pieceH = imgDrawH / rows;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, offsetX, offsetY, imgDrawW, imgDrawH);
+
+    // 绘制网格预览
+    drawGridPreview();
+}
+
+// ──────────────── 网格预览 ────────────────
+function drawGridPreview() {
+    if (!image || mode === 'scattered') return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([8, 6]);
+
+    for (let r = 0; r <= rows; r++) {
+        const y = offsetY + r * pieceH;
+        ctx.beginPath();
+        ctx.moveTo(offsetX, y);
+        ctx.lineTo(offsetX + imgDrawW, y);
+        ctx.stroke();
+    }
+    for (let c = 0; c <= cols; c++) {
+        const x = offsetX + c * pieceW;
+        ctx.beginPath();
+        ctx.moveTo(x, offsetY);
+        ctx.lineTo(x, offsetY + imgDrawH);
+        ctx.stroke();
+    }
+
+    // 显示总块数
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${rows * cols} 块`, offsetX + imgDrawW / 2, offsetY - 12);
+
+    ctx.restore();
+}
+
+// ──────────────── 粒度选择 ────────────────
+gridBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        if (mode === 'scattered' || animating) return;
+        gridBtns.forEach(b => b.classList.remove('grid-active'));
+        btn.classList.add('grid-active');
+        const n = parseInt(btn.dataset.grid);
+        cols = n;
+        rows = n;
+        if (image) {
+            drawOriginal();
+        }
+    });
+});
+
+// ──────────────── 拼图边类型（相邻互补）────────────────
+function generatePieceEdges() {
+    const edges = [];
+    for (let r = 0; r < rows; r++) {
+        edges[r] = [];
+        for (let c = 0; c < cols; c++) {
+            edges[r][c] = {
+                top:    (r === 0) ? 0 : -edges[r - 1][c].bottom,
+                bottom: (r === rows - 1) ? 0 : (Math.random() > 0.5 ? 1 : -1),
+                left:   (c === 0) ? 0 : -edges[r][c - 1].right,
+                right:  (c === cols - 1) ? 0 : (Math.random() > 0.5 ? 1 : -1)
+            };
+        }
+    }
+    return edges;
+}
+
+// ──────────────── 绘制单条边 ────────────────
+function drawEdge(x1, y1, x2, y2, type) {
+    if (type === 0) { ctx.lineTo(x2, y2); return; }
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.hypot(dx, dy);
+    const ux = dx / len, uy = dy / len;
+    const nx = uy, ny = -ux;
+    const sign = type;
+    const r = len * 0.20;
+    const hw = len * 0.15;
+    const aX = x1 + ux * (len / 2 - hw), aY = y1 + uy * (len / 2 - hw);
+    const bX = x1 + ux * (len / 2 + hw), bY = y1 + uy * (len / 2 + hw);
+    const tX = x1 + ux * (len / 2) + nx * r * sign;
+    const tY = y1 + uy * (len / 2) + ny * r * sign;
+    ctx.lineTo(aX, aY);
+    ctx.quadraticCurveTo(aX + nx * r * sign, aY + ny * r * sign, tX, tY);
+    ctx.quadraticCurveTo(bX + nx * r * sign, bY + ny * r * sign, bX, bY);
+    ctx.lineTo(x2, y2);
+}
+
+// ──────────────── 整块拼图路径 ────────────────
+function drawPiecePath(x, y, w, h, edges) {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    drawEdge(x, y, x + w, y, edges.top);
+    drawEdge(x + w, y, x + w, y + h, edges.right);
+    drawEdge(x + w, y + h, x, y + h, edges.bottom);
+    drawEdge(x, y + h, x, y, edges.left);
+    ctx.closePath();
+}
+
+// ──────────────── 碎片视觉安全边距 ────────────────
+function getVisualExtent() {
+    const tabExt = Math.max(pieceW, pieceH) * 0.22;
+    const rotExt = Math.max(pieceW, pieceH) * 0.18;
+    const shadowExt = 14;
+    const margin = tabExt + rotExt + shadowExt;
+    return Math.ceil(margin);
+}
+
+// ──────────────── 散落位置计算 ────────────────
+function getScatterPosition(piece, index) {
+    const M = getVisualExtent();
+    const minX = M;
+    const maxX = canvas.width - piece.w - M;
+    const minY = M;
+    const maxY = canvas.height - piece.h - M;
+
+    const imgBuf = M + 10;
+    const imgLeft = offsetX - imgBuf;
+    const imgRight = offsetX + imgDrawW + imgBuf;
+    const imgTop = offsetY - imgBuf;
+    const imgBottom = offsetY + imgDrawH + imgBuf;
+
+    const zones = [];
+    if (imgLeft - minX > piece.w) {
+        zones.push({ xMin: minX, xMax: imgLeft, yMin: minY, yMax: maxY });
+    }
+    if (maxX - imgRight > piece.w) {
+        zones.push({ xMin: imgRight, xMax: maxX, yMin: minY, yMax: maxY });
+    }
+    if (imgTop - minY > piece.h) {
+        zones.push({ xMin: minX, xMax: maxX, yMin: minY, yMax: imgTop });
+    }
+    if (maxY - imgBottom > piece.h) {
+        zones.push({ xMin: minX, xMax: maxX, yMin: imgBottom, yMax: maxY });
+    }
+
+    if (zones.length === 0) {
+        return {
+            x: minX + Math.random() * Math.max(1, maxX - minX),
+            y: minY + Math.random() * Math.max(1, maxY - minY)
+        };
+    }
+
+    const zone = zones[index % zones.length];
+    const zx = Math.max(zone.xMin, Math.min(zone.xMax, zone.xMax));
+    const zy = Math.max(zone.yMin, Math.min(zone.yMax, zone.yMax));
+    const x = Math.max(minX, Math.min(maxX,
+        zone.xMin + Math.random() * Math.max(1, zx - zone.xMin)));
+    const y = Math.max(minY, Math.min(maxY,
+        zone.yMin + Math.random() * Math.max(1, zy - zone.yMin)));
+    return { x, y };
+}
+
+// ──────────────── 生成碎片 ────────────────
+function generatePieces() {
+    const edgesArr = generatePieceEdges();
+    pieces = [];
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            const correctX = offsetX + c * pieceW;
+            const correctY = offsetY + r * pieceH;
+            const scatter = getScatterPosition({ w: pieceW, h: pieceH }, r * cols + c);
+            pieces.push({
+                row: r, col: c,
+                x: correctX, y: correctY,
+                w: pieceW, h: pieceH,
+                srcX: c * (image.width / cols),
+                srcY: r * (image.height / rows),
+                srcW: image.width / cols,
+                srcH: image.height / rows,
+                edges: edgesArr[r][c],
+                extTop:    edgesArr[r][c].top    !== 0,
+                extRight:  edgesArr[r][c].right  !== 0,
+                extBottom: edgesArr[r][c].bottom !== 0,
+                extLeft:   edgesArr[r][c].left   !== 0,
+                startX: correctX, startY: correctY,
+                targetX: scatter.x, targetY: scatter.y,
+                rotation: 0,
+                targetRotation: (Math.random() - 0.5) * 0.35,
+                locked: false,
+                scale: 1
+            });
+        }
+    }
+}
+
+// ──────────────── 散落动画 ────────────────
+function animateShuffle() {
+    animating = true;
+    shuffleBtn.disabled = true;
+    resetBtn.disabled = true;
+    gridBtns.forEach(b => b.disabled = true);
+    const startTime = performance.now();
+    const duration = 1800;
+
+    function frame(now) {
+        const elapsed = now - startTime;
+        const t = Math.min(elapsed / duration, 1);
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // 原图位置虚线轮廓
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 4]);
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                drawPiecePath(offsetX + c * pieceW, offsetY + r * pieceH, pieceW, pieceH,
+                              pieces[r * cols + c].edges);
+                ctx.stroke();
+            }
+        }
+        ctx.restore();
+
+        // 碎片
+        pieces.forEach((p, i) => {
+            const delay = (i / pieces.length) * 0.25;
+            const lt = Math.max(0, Math.min(1, (t - delay) / (1 - delay)));
+            const eased = 1 - Math.pow(1 - lt, 3);
+
+            p.x = p.startX + (p.targetX - p.startX) * eased;
+            p.y = p.startY + (p.targetY - p.startY) * eased;
+            p.rotation = p.targetRotation * eased;
+
+            // 钳制
+            const M = getVisualExtent();
+            p.x = Math.max(M, Math.min(canvas.width - p.w - M, p.x));
+            p.y = Math.max(M, Math.min(canvas.height - p.h - M, p.y));
+
+            drawPiece(p);
+        });
+
+        if (t < 1) {
+            requestAnimationFrame(frame);
+        } else {
+            pieces.forEach(p => { p.rotation = 0; });
+            animating = false;
+            mode = 'scattered';
+            shuffleBtn.disabled = false;
+            shuffleBtn.textContent = '重新打散';
+            resetBtn.disabled = false;
+            gridBtns.forEach(b => b.disabled = false);
+            updateCounter();
+            counterEl.classList.add('show');
+            redraw();
+        }
+    }
+    requestAnimationFrame(frame);
+}
+
+// ──────────────── 绘制单块碎片 ────────────────
+function drawPiece(p) {
+    ctx.save();
+    ctx.translate(p.x + p.w / 2, p.y + p.h / 2);
+    ctx.rotate(p.rotation);
+    if (p.scale !== 1) ctx.scale(p.scale, p.scale);
+    ctx.translate(-p.w / 2, -p.h / 2);
+
+    // 阴影底
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.55)';
+    ctx.shadowBlur = p === dragging ? 28 : 14;
+    ctx.shadowOffsetX = p === dragging ? 6 : 4;
+    ctx.shadowOffsetY = p === dragging ? 12 : 7;
+    drawPiecePath(0, 0, p.w, p.h, p.edges);
+    ctx.fillStyle = '#000';
+    ctx.fill();
+    ctx.restore();
+
+    // 裁剪绘制图片
+    ctx.save();
+    drawPiecePath(0, 0, p.w, p.h, p.edges);
+    ctx.clip();
+    // 水平凸耳延伸 = pieceW * 0.20，垂直 = pieceH * 0.20
+    const tabX = p.w * 0.20;
+    const tabY = p.h * 0.20;
+    ctx.drawImage(
+        image,
+        p.srcX - p.extLeft * tabX,    p.srcY - p.extTop * tabY,
+        p.srcW + (p.extLeft + p.extRight) * tabX,
+        p.srcH + (p.extTop + p.extBottom) * tabY,
+        -p.extLeft * tabX,            -p.extTop * tabY,
+        p.w + (p.extLeft + p.extRight) * tabX,
+        p.h + (p.extTop + p.extBottom) * tabY
+    );
+    ctx.restore();
+
+    // 边框高光（未锁定时才画，拼好后不画边框，碎片自然融合）
+    if (!p.locked) {
+        drawPiecePath(0, 0, p.w, p.h, p.edges);
+        ctx.strokeStyle = p === dragging ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.18)';
+        ctx.lineWidth = p === dragging ? 2 : 1;
+        ctx.stroke();
+    }
+
+    ctx.restore();
+}
+
+// ──────────────── 主重绘 ────────────────
+function redraw() {
+    if (animating) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (mode === 'scattered') {
+        // 虚线轮廓
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 4]);
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                drawPiecePath(offsetX + c * pieceW, offsetY + r * pieceH, pieceW, pieceH,
+                              pieces[r * cols + c].edges);
+                ctx.stroke();
+            }
+        }
+        ctx.restore();
+
+        pieces.filter(p => p.locked).forEach(drawPiece);
+        pieces.filter(p => !p.locked).forEach(drawPiece);
+    } else if (image) {
+        drawOriginal();
+    }
+}
+
+// ──────────────── 命中检测 ────────────────
+function getPieceAt(mx, my) {
+    for (let i = pieces.length - 1; i >= 0; i--) {
+        const p = pieces[i];
+        if (p.locked) continue;
+        const margin = Math.min(p.w, p.h) * 0.22;
+        if (mx >= p.x - margin && mx <= p.x + p.w + margin &&
+            my >= p.y - margin && my <= p.y + p.h + margin) {
+            return p;
+        }
+    }
+    return null;
+}
+
+// ──────────────── 坐标转换 ────────────────
+function getCanvasCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const cx = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+    const cy = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
+    return { x: (cx - rect.left) * scaleX, y: (cy - rect.top) * scaleY };
+}
+
+// ──────────────── 吸附检测 ────────────────
+function checkSnap(p) {
+    const correctX = offsetX + p.col * pieceW;
+    const correctY = offsetY + p.row * pieceH;
+    const dist = Math.hypot(p.x - correctX, p.y - correctY);
+    const threshold = Math.min(pieceW, pieceH) * 0.35;
+    if (dist < threshold) {
+        p.x = correctX;
+        p.y = correctY;
+        p.rotation = 0;
+        p.locked = true;
+        lockedCount++;
+        return true;
+    }
+    return false;
+}
+
+// ──────────────── 计数器 ────────────────
+function updateCounter() {
+    counterEl.textContent = `已拼好  ${lockedCount} / ${rows * cols}`;
+}
+
+// ──────────────── 完成检测 ────────────────
+function checkComplete() {
+    if (lockedCount === rows * cols) {
+        setTimeout(() => {
+            completeMsg.classList.add('show');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            pieces.forEach(drawPiece);
+        }, 300);
+    }
+}
+
+// ──────────────── 鼠标/触摸事件 ────────────────
+function handleStart(e) {
+    if (animating || mode !== 'scattered') return;
+    e.preventDefault();
+    const { x, y } = getCanvasCoords(e);
+    const p = getPieceAt(x, y);
+    if (p) {
+        dragging = p;
+        dragOffsetX = x - p.x;
+        dragOffsetY = y - p.y;
+        const idx = pieces.indexOf(p);
+        pieces.splice(idx, 1);
+        pieces.push(p);
+        p.scale = 1.05;
+        canvas.classList.add('grabbing');
+        redraw();
+    }
+}
+
+function handleMove(e) {
+    if (animating || mode !== 'scattered') return;
+    const { x, y } = getCanvasCoords(e);
+
+    if (dragging) {
+        e.preventDefault();
+        dragging.x = x - dragOffsetX;
+        dragging.y = y - dragOffsetY;
+        redraw();
+    } else {
+        const p = getPieceAt(x, y);
+        if (p !== hoverPiece) {
+            hoverPiece = p;
+            canvas.classList.toggle('grabbable', !!p);
+        }
+    }
+}
+
+function handleEnd(e) {
+    if (!dragging) return;
+    const snapped = checkSnap(dragging);
+    dragging.scale = 1;
+    canvas.classList.remove('grabbing');
+
+    if (snapped) {
+        updateCounter();
+        const idx = pieces.indexOf(dragging);
+        pieces.splice(idx, 1);
+        pieces.unshift(dragging);
+    }
+
+    dragging = null;
+    redraw();
+
+    if (snapped) checkComplete();
+}
+
+canvas.addEventListener('mousedown', handleStart);
+window.addEventListener('mousemove', handleMove);
+window.addEventListener('mouseup', handleEnd);
+canvas.addEventListener('touchstart', handleStart, { passive: false });
+canvas.addEventListener('touchmove', handleMove, { passive: false });
+canvas.addEventListener('touchend', handleEnd);
+
+// ──────────────── 按钮事件 ────────────────
+shuffleBtn.addEventListener('click', () => {
+    if (!image || animating) return;
+    if (mode === 'scattered') {
+        lockedCount = 0;
+        completeMsg.classList.remove('show');
+    }
+    generatePieces();
+    counterEl.classList.remove('show');
+    animateShuffle();
+});
+
+resetBtn.addEventListener('click', () => {
+    mode = 'idle';
+    animating = false;
+    pieces = [];
+    lockedCount = 0;
+    dragging = null;
+    shuffleBtn.disabled = false;
+    shuffleBtn.textContent = '打散拼图';
+    resetBtn.disabled = true;
+    counterEl.classList.remove('show');
+    completeMsg.classList.remove('show');
+    canvas.classList.remove('grabbable', 'grabbing');
+    gridBtns.forEach(b => b.disabled = false);
+    drawOriginal();
+});
+</script>
+</body>
+</html>
